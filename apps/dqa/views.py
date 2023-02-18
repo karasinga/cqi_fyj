@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.express as px
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction, DatabaseError
 from django.http import HttpResponseRedirect
 from django.shortcuts import render, redirect
 
@@ -18,6 +18,7 @@ from apps.dqa.form import DataVerificationForm, PeriodForm, QuarterSelectionForm
     DQAWorkPlanForm, SystemAssessmentForm, DateSelectionForm
 from apps.dqa.models import DataVerification, Period, Indicators, FyjPerformance, DQAWorkPlan, SystemAssessment
 from apps.cqi.views import bar_chart
+from apps.cqi.models import Facilities
 
 
 def load_system_data(request):
@@ -37,7 +38,7 @@ def load_system_data(request):
 def load_data(request):
     if request.method == 'POST':
         file = request.FILES['file']
-        # Read the data from the excel file into a pandas DataFrame
+        # Read the data from the Excel file into a pandas DataFrame
         keyword = "perf"
         xls_file = pd.ExcelFile(file)
         sheet_names = [sheet for sheet in xls_file.sheet_names if keyword.upper() in sheet.upper()]
@@ -1580,48 +1581,138 @@ def show_dqa_work_plan(request):
 #     # Render the template with the context
 #     return render(request, 'dqa/add_system_assessment.html', context)
 def add_system_verification(request):
-    descriptions = ['description1', 'description2', 'description25']
+    if request.method == "GET":
+        request.session['page_from'] = request.META.get('HTTP_REFERER', '/')
+
+    quarter_form = QuarterSelectionForm(request.POST or None)
+    year_form = YearSelectionForm(request.POST or None)
+    facility_form = FacilitySelectionForm(request.POST or None)
+    date_form = DateSelectionForm(request.POST or None)
+    descriptions = [
+        "There is a documented structure/chart that clearly identifies positions that have data management "
+        "responsibilities at the Facility.",
+        "Positions dedicated to M&E and data management systems in the facility are filled.",
+        "There is a training plan which includes staff involved in data-collection and reporting at all levels in the "
+        "reporting process.",
+        "All relevant staff have received training on the data management processes and tools.",
+        "There is a designated staff responsible for reviewing the quality of data (i.e., accuracy, completeness and "
+        "timeliness) before submission to the Sub County.",
+        "The facility has data quality SOPs for monthly reporting processes and quality checks",
+        "The facility conducts internal data quality checks and validation before submission of reports",
+        "The facility has conducted a data quality audit in the last 6 months",
+        "There is a documented data improvement action plan? Verify by seeing",
+        "Feedback is systematically provided to the facility on the quality of their reporting (i.e., accuracy, "
+        "completeness and timeliness).",
+        "The facility regularly reviews data to inform decision making (Ask for evidence e.g.meeting minutes, "
+        "MDT feedback data template",
+        "The facility is aware of their yearly targets and are monitoring monthly performance using wall charts",
+        "The facility has been provided with indicator definitions reference guides for both MOH and MER 2.6 "
+        "indicators.",
+        "The facility staff are very clear on what they are supposed to report on.",
+        "The facility staff are very clear on how (e.g., in what specific format) reports are to be submitted.",
+        "The facility staff are very clear on to whom the reports should be submitted.",
+        "The facility staff are very clear on when the reports are due.",
+        "The facility has the latest versions of source documents (registers) and aggregation tool (MOH 731)",
+        "Clear instructions have been provided to the facility on how to complete the data collection and reporting "
+        "forms/tools.",
+        "The facility has the revised HTS register in all service delivery points and a clear inventory is available "
+        "detailing the number of HTS registers in use by service delivery point",
+        "HIV client files are well organised and stored in a secure location",
+        "Do you use your EMR to generate reports?",
+        "There is a clearly documented and actively implemented database administration procedure in place. This "
+        "includes backup/recovery procedures, security admininstration, and user administration.",
+        "The facility carries out daily back up of EMR data (Ask to see the back up for the day of the DQA)",
+        "The facility has conducted an RDQA of the EMR system in the last 3 months with documented action points,"
+        "What is your main challenge regarding data management and reporting?"]
     initial_data = [{'description': description} for description in descriptions]
-    print(initial_data)
 
     SystemAssessmentFormSet = modelformset_factory(
         SystemAssessment,
         form=SystemAssessmentForm,
-        extra=5,
-    )
+        extra=25
 
-    # if request.method == 'POST':
-    #     formset = SystemAssessmentFormSet(request.POST, initial=initial_data)
-    #     if formset.is_valid():
-    #         instances = formset.save(commit=False)
-    #         for instance in instances:
-    #             instance.dropdown_option = formset.cleaned_data[formset.forms.index(instance)]['dropdown_option']
-    #             instance.auditor_note = formset.cleaned_data[formset.forms.index(instance)]['auditor_note']
-    #             instance.supporting_documentation_required = formset.cleaned_data[formset.forms.index(instance)][
-    #                 'supporting_documentation_required']
-    #             instance.facility_name = request.user.facility  # Or however you want to determine the facility
-    #             # instance.quarter_year = get_current_quarter_year()  # Replace with your own function to determine the current quarter year
-    #             instance.dqa_date = timezone.now().date()
-    #             instance.created_by = request.user
-    #             if instance.dropdown_option == 'Yes':
-    #                 instance.calculations = 3
-    #             elif instance.dropdown_option == 'Partly':
-    #                 instance.calculations = 2
-    #             elif instance.dropdown_option == 'No':
-    #                 instance.calculations = 1
-    #             instance.save()
-    # else:
-    # formset = SystemAssessmentFormSet(initial=initial_data)
-    # initial_data = [{'description': 'description1'}, {'description': 'description2'},
-    #                 {'description': 'description3'}]
-    # formset = SystemAssessmentFormSet(queryset=SystemAssessment.objects.none(), initial=initial_data)
-    formset = SystemAssessmentFormSet(queryset=SystemAssessment.objects.all(),initial=initial_data)
-    print("form set::::::::::::::::::::::::::::::")
-    print(formset)
+    )
+    formset = SystemAssessmentFormSet(queryset=SystemAssessment.objects.none(), initial=initial_data)
+    if request.method == "POST":
+        formset = SystemAssessmentFormSet(request.POST, initial=initial_data)
+        if formset.is_valid() and quarter_form.is_valid() and year_form.is_valid() and date_form.is_valid() and facility_form.is_valid():
+            selected_quarter = quarter_form.cleaned_data['quarter']
+            selected_facility = facility_form.cleaned_data['name']
+            selected_year = year_form.cleaned_data['year']
+            selected_date = date_form.cleaned_data['date']
+            instances = formset.save(commit=False)
+            # Check if all forms in formset are filled
+            if not all([form.has_changed() for form in formset.forms]):
+                messages.error(request, "Please fill all rows before saving.")
+            else:
+                try:
+                    with transaction.atomic():
+                        for form, instance in zip(formset.forms, instances):
+                            # Set instance fields from form data
+                            instance.dropdown_option = form.cleaned_data['dropdown_option']
+                            instance.auditor_note = form.cleaned_data['auditor_note']
+                            instance.supporting_documentation_required = form.cleaned_data[
+                                'supporting_documentation_required']
+                            instance.dqa_date = selected_date
+                            instance.created_by = request.user
+                            if instance.dropdown_option == 'Yes':
+                                instance.calculations = 3
+                            elif instance.dropdown_option == 'Partly':
+                                instance.calculations = 2
+                            elif instance.dropdown_option == 'No':
+                                instance.calculations = 1
+                            # Get or create the Facility instance
+                            facility, created = Facilities.objects.get_or_create(name=selected_facility)
+                            instance.facility_name = facility
+                            # Get or create the Period instance
+                            period, created = Period.objects.get_or_create(quarter=selected_quarter, year=selected_year)
+                            instance.quarter_year = period
+                            instance.save()
+                        messages.success(request, "Successfully saved to the database!")
+                except DatabaseError:
+                    messages.error(request,
+                                   "Database Error: An error occurred while saving to the database. Data already "
+                                   "exists!")
 
     context = {
-        'formset': formset,
+        "formset": formset,
+        "quarter_form": quarter_form,
+        "year_form": year_form,
+        "facility_form": facility_form,
+        "date_form": date_form,
     }
-    # return render(request, 'add_system_verification.html', context)
-
     return render(request, 'dqa/add_system_assessment.html', context)
+
+
+def system_assessment_table(request):
+    if request.method == "GET":
+        request.session['page_from'] = request.META.get('HTTP_REFERER', '/')
+
+    quarter_form = QuarterSelectionForm(request.POST or None)
+    year_form = YearSelectionForm(request.POST or None)
+    facility_form = FacilitySelectionForm(request.POST or None)
+    date_form = DateSelectionForm(request.POST or None)
+    system_assessments=None
+
+    if quarter_form.is_valid() and year_form.is_valid()  and facility_form.is_valid():
+        selected_quarter = quarter_form.cleaned_data['quarter']
+        selected_facility = facility_form.cleaned_data['name']
+        selected_year = year_form.cleaned_data['year']
+
+        year_suffix = selected_year[-2:]
+        quarter_year = f"{selected_quarter}-{year_suffix}"
+
+        system_assessments = SystemAssessment.objects.filter(quarter_year__quarter_year=quarter_year,
+                                                             facility_name=selected_facility)
+        if not system_assessments:
+            messages.error(request,f"System assessment data was not found for {selected_facility} ({quarter_year})")
+
+
+    context = {
+        "quarter_form": quarter_form,
+        "year_form": year_form,
+        "facility_form": facility_form,
+        "date_form": date_form,
+        'system_assessments': system_assessments
+    }
+    return render(request, 'dqa/show_system_assessment.html', context)
